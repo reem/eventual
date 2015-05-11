@@ -6,7 +6,7 @@ use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::{fmt, u32};
 
-pub fn select<S: Select<E>, E: Send + 'static>(asyncs: S) -> Future<(u32, S), E> {
+pub fn select<'a, S: Select<'a, E>, E: Send + 'a>(asyncs: S) -> Future<'a, (u32, S), E> {
     let (complete, res) = Future::pair();
 
     // Don't do any work until the consumer registers interest in the completed
@@ -21,8 +21,8 @@ pub fn select<S: Select<E>, E: Send + 'static>(asyncs: S) -> Future<(u32, S), E>
 }
 
 
-pub trait Select<E: Send + 'static> : Send + 'static {
-    fn select(self, complete: Complete<(u32, Self), E>);
+pub trait Select<'a, E: Send + 'a>: Send {
+    fn select(self, complete: Complete<'a, (u32, Self), E>);
 }
 
 // ## Flow
@@ -49,29 +49,28 @@ pub trait Select<E: Send + 'static> : Send + 'static {
 // - Switch to associated types over Index & Error
 //     Blocked: rust-lang/rust#21664
 
-trait Values<S: Select<E>, E> {
-    type Tokens: Send + 'static;
+trait Values<S, E> {
+    type Tokens: Send;
 
     fn consume(&mut self) -> S;
 
     fn cancel_callbacks(&mut self, selected: u32, up_to: u32, tokens: &mut Self::Tokens) -> u32;
 }
 
-struct Selection<V: Values<S, E>, S: Select<E>, E: Send + 'static> {
-    core: Arc<UnsafeCell<Core<V, S, E>>>,
+struct Selection<'a, V: Values<S, E>, S: Select<'a, E> + 'a, E: Send + 'a> {
+    core: Arc<UnsafeCell<Core<'a, V, S, E>>>,
 }
 
-unsafe impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Sync for Selection<V, S, E> {}
-unsafe impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Send for Selection<V, S, E> {}
+unsafe impl<'a, V: Values<S, E>, S: Select<'a, E>, E: Send + 'a> Sync for Selection<'a, V, S, E> {}
+unsafe impl<'a, V: Values<S, E>, S: Select<'a, E>, E: Send + 'a> Send for Selection<'a, V, S, E> {}
 
 // This implementation is very unsafe
-impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Selection<V, S, E> {
-
+impl<'a, V: Values<S, E>, S: Select<'a, E>, E: Send + 'a> Selection<'a, V, S, E> {
     /// Create a new Selection instance
     fn new(vals: V,
            tokens: V::Tokens,
            remaining: u32,
-           complete: Complete<(u32, S), E>) -> Selection<V, S, E> {
+           complete: Complete<'a, (u32, S), E>) -> Selection<'a, V, S, E> {
 
         let core = Arc::new(UnsafeCell::new(Core {
             vals: vals,
@@ -83,7 +82,7 @@ impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Selection<V, S, E> {
         Selection { core: core }
     }
 
-    fn async_ready<A: Async<Error=E>>(&self, async: A, index: u32, slot: &mut Option<A>) {
+    fn async_ready<A: Async<'a, Error=E>>(&self, async: A, index: u32, slot: &mut Option<A>) {
         let mut handled = 1;
 
         debug!("selection async ready; index={}; is_err={}", index, async.is_err());
@@ -126,10 +125,10 @@ impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Selection<V, S, E> {
     }
 
     // Track that a callback was just registered on an async value.
-    fn track_callback<A: Async>(&self,
-                                cancel: A::Cancel,
-                                aref: &mut Option<A>,
-                                cref: &mut Option<A::Cancel>) -> bool {
+    fn track_callback<A: Async<'a>>(&self,
+                                    cancel: A::Cancel,
+                                    aref: &mut Option<A>,
+                                    cref: &mut Option<A::Cancel>) -> bool {
 
         // Store the cancel token
         *cref = Some(cancel);
@@ -192,27 +191,27 @@ impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Selection<V, S, E> {
         complete.complete((curr.selected(), core.vals.consume()));
     }
 
-    fn core(&self) -> &Core<V, S, E> {
+    fn core(&self) -> &Core<'a, V, S, E> {
         use std::mem;
         unsafe { mem::transmute(self.core.get()) }
     }
 
-    fn core_mut(&self) -> &mut Core<V, S, E> {
+    fn core_mut(&self) -> &mut Core<'a, V, S, E> {
         use std::mem;
         unsafe { mem::transmute(self.core.get()) }
     }
 }
 
-impl<V: Values<S, E>, S: Select<E>, E: Send + 'static> Selection<V, S, E> {
-    fn clone(&self) -> Selection<V, S, E> {
+impl<'a, V: Values<S, E>, S: Select<'a, E>, E: Send + 'a> Selection<'a, V, S, E> {
+    fn clone(&self) -> Selection<'a, V, S, E> {
         Selection { core: self.core.clone() }
     }
 }
 
-struct Core<V: Values<S, E>, S: Select<E>, E: Send + 'static> {
+struct Core<'a, V: Values<S, E>, S: Select<'a, E> + 'a, E: Send + 'a> {
     vals: V,
     tokens: V::Tokens,
-    complete: Option<Complete<(u32, S), E>>,
+    complete: Option<Complete<'a, (u32, S), E>>,
     state: AtomicState,
 }
 
@@ -481,8 +480,8 @@ impl State {
  *
  */
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, E: Send + 'static> Select<E> for (A1, A2) {
-    fn select(self, complete: Complete<(u32, (A1, A2)), E>) {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>, E: Send + 'a> Select<'a, E> for (A1, A2) {
+    fn select(self, complete: Complete<'a, (u32, (A1, A2)), E>) {
         let (a1, a2) = self;
 
         tuple_select!(
@@ -493,8 +492,8 @@ impl<A1: Async<Error=E>, A2: Async<Error=E>, E: Send + 'static> Select<E> for (A
     }
 }
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, E> Values<(A1, A2), E> for (Option<A1>, Option<A2>)
-        where E: Send + 'static {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>, E> Values<(A1, A2), E> for (Option<A1>, Option<A2>)
+        where E: Send + 'a {
 
     type Tokens = (Option<A1::Cancel>, Option<A2::Cancel>);
 
@@ -517,7 +516,7 @@ impl<A1: Async<Error=E>, A2: Async<Error=E>, E> Values<(A1, A2), E> for (Option<
     }
 }
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, A3: Async<Error=E>, E: Send + 'static> Select<E> for (A1, A2, A3) {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>, A3: Async<'a, Error=E>, E: Send + 'a> Select<'a, E> for (A1, A2, A3) {
     fn select(self, complete: Complete<(u32, (A1, A2, A3)), E>) {
         let (a1, a2, a3) = self;
 
@@ -529,8 +528,9 @@ impl<A1: Async<Error=E>, A2: Async<Error=E>, A3: Async<Error=E>, E: Send + 'stat
     }
 }
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, A3: Async<Error=E>, E> Values<(A1, A2, A3), E> for (Option<A1>, Option<A2>, Option<A3>)
-        where E: Send + 'static {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>,
+         A3: Async<'a, Error=E>, E> Values<(A1, A2, A3), E> for (Option<A1>, Option<A2>, Option<A3>)
+        where E: Send + 'a {
 
     type Tokens = (Option<A1::Cancel>, Option<A2::Cancel>, Option<A3::Cancel>);
 

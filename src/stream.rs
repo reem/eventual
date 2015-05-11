@@ -19,20 +19,19 @@ use std::fmt;
  */
 
 #[must_use = "streams are lazy and do nothing unless consumed"]
-pub struct Stream<T: Send + 'static, E: Send + 'static> {
-    core: Option<Core<Head<T, E>, E>>,
+pub struct Stream<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<StreamCore<'a, T, E>>,
 }
 
 /// Convenience type alias for the realized head of a stream
-pub type Head<T, E> = Option<(T, Stream<T, E>)>;
+pub type Head<'a, T, E> = Option<(T, Stream<'a, T, E>)>;
 
 // Shorthand for the core type for Streams
-pub type StreamCore<T, E> = Core<Head<T, E>, E>;
+pub type StreamCore<'a, T, E> = Core<'a, Head<'a, T, E>, E>;
 
-impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
-
+impl<'a, T: Send + 'a, E: Send + 'a> Stream<'a, T, E> {
     /// Creates a new `Stream`, returning it with the associated `Sender`.
-    pub fn pair() -> (Sender<T, E>, Stream<T, E>) {
+    pub fn pair() -> (Sender<'a, T, E>, Stream<'a, T, E>) {
         let core = Core::new();
         let stream = Stream { core: Some(core.clone()) };
 
@@ -44,22 +43,22 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     /// ```
     /// use eventual::*;
     ///
-    /// let stream = Stream::<i32, &'static str>::empty();
+    /// let stream = Stream::<i32, &'a str>::empty();
     /// assert!(stream.iter().next().is_none());
     /// ```
-    pub fn empty() -> Stream<T, E> {
+    pub fn empty() -> Stream<'a, T, E> {
         Stream { core: Some(Core::with_value(Ok(None))) }
     }
 
     /// Asyncronously collects the items from the `Stream`, returning them sorted by order of
     /// arrival.
-    pub fn collect(self) -> Future<Vec<T>, E> {
+    pub fn collect(self) -> Future<'a, Vec<T>, E> {
         let buffer = Vec::new();
         self.reduce(buffer, |mut vec, item| { vec.push(item); return vec })
     }
 
     /// Synchronously iterate over the `Stream`
-    pub fn iter(mut self) -> StreamIter<T, E> {
+    pub fn iter(mut self) -> StreamIter<'a, T, E> {
         StreamIter { core: Some(core::take(&mut self.core)) }
     }
 
@@ -71,7 +70,7 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
 
     /// Sequentially yields each value to the supplied function. Returns a
     /// future representing the completion of the final yield.
-    pub fn each<F: Fn(T) + Send + 'static>(self, f: F) -> Future<(), E> {
+    pub fn each<F: Fn(T) + Send + 'a>(self, f: F) -> Future<'a, (), E> {
         let (complete, ret) = Future::pair();
 
         complete.receive(move |res| {
@@ -84,7 +83,7 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     }
 
     // Perform the iteration
-    fn do_each<F: Fn(T) + Send + 'static>(self, f: F, complete: Complete<(), E>) {
+    fn do_each<F: Fn(T) + Send + 'a>(self, f: F, complete: Complete<'a, (), E>) {
         self.receive(move |head| {
             match head {
                 Ok(Some((v, rest))) => {
@@ -104,15 +103,15 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
 
     /// Returns a new stream containing the values of the original stream that
     /// match the given predicate.
-    pub fn filter<F: Fn(&T) -> bool + Send + 'static>(self, f: F) -> Stream<T, E> {
+    pub fn filter<F: Fn(&T) -> bool + Send + 'a>(self, f: F) -> Stream<'a, T, E> {
         let (sender, stream) = Stream::pair();
         self.do_filter(f, sender);
         stream
     }
 
     fn do_filter<F, A>(self, f: F, sender: A)
-            where F: Fn(&T) -> bool + Send + 'static,
-                  A: Async<Value=Sender<T, E>> {
+            where F: Fn(&T) -> bool + Send + 'a,
+                  A: Async<'a, Value=Sender<'a, T, E>> {
 
         // Wait for the consumer to express interest
         sender.receive(move |res| {
@@ -137,7 +136,7 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
 
     /// Returns a new stream representing the application of the specified
     /// function to each value of the original stream.
-    pub fn map<F: Fn(T) -> U + Send + 'static, U: Send + 'static>(self, f: F) -> Stream<U, E> {
+    pub fn map<F: Fn(T) -> U + Send + 'a, U: Send>(self, f: F) -> Stream<'a, U, E> {
         self.map_async(move |val| Ok(f(val)))
     }
 
@@ -145,9 +144,9 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     /// function to each value of the original stream. Each iteration waits for
     /// the async result of the mapping to realize before continuing on to the
     /// next value.
-    pub fn map_async<F, U>(self, action: F) -> Stream<U::Value, E>
-            where F: Fn(T) -> U + Send + 'static,
-                  U: Async<Error=E> {
+    pub fn map_async<F, U>(self, action: F) -> Stream<'a, U::Value, E>
+            where F: Fn(T) -> U + Send + 'a,
+                  U: Async<'a, Error=E> {
 
         let (sender, ret) = Stream::pair();
 
@@ -160,9 +159,9 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
         ret
     }
 
-    fn do_map<F, U>(self, sender: Sender<U::Value, E>, f: F)
-            where F: Fn(T) -> U + Send + 'static,
-                  U: Async<Error=E> {
+    fn do_map<F, U>(self, sender: Sender<'a, U::Value, E>, f: F)
+            where F: Fn(T) -> U + Send + 'a,
+                  U: Async<'a, Error=E> {
 
         self.receive(move |head| {
             match head {
@@ -191,9 +190,9 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     /// Returns a new stream with an identical sequence of values as the
     /// original. If the original stream errors, apply the given function on
     /// the error and use the result as the error of the new stream.
-    pub fn map_err<F, U>(self, f: F) -> Stream<T, U>
-            where F: FnOnce(E) -> U + Send + 'static,
-                  U: Send + 'static {
+    pub fn map_err<F, U>(self, f: F) -> Stream<'a, T, U>
+            where F: FnOnce(E) -> U + Send + 'a,
+                  U: Send + 'a {
         let (sender, stream) = Stream::pair();
 
         sender.receive(move |res| {
@@ -206,8 +205,8 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     }
 
     fn do_map_err<F, U>(self, sender: Sender<T, U>, f: F)
-            where F: FnOnce(E) -> U + Send + 'static,
-                  U: Send + 'static {
+            where F: FnOnce(E) -> U + Send + 'a,
+                  U: Send + 'a {
         self.receive(move |res| {
             match res {
                 Ok(Some((val, rest))) => {
@@ -224,9 +223,9 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
         });
     }
 
-    pub fn process<F, U>(self, in_flight: usize, f: F) -> Stream<U::Value, E>
-            where F: Fn(T) -> U + Send + 'static,
-                  U: Async<Error=E> {
+    pub fn process<F, U>(self, in_flight: usize, f: F) -> Stream<'a, U::Value, E>
+            where F: Fn(T) -> U + Send + 'a,
+                  U: Async<'a, Error=E> {
         use process::process;
         process(self, in_flight, f)
     }
@@ -237,7 +236,7 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     ///
     /// Returns a future that will be completed with the result of the final
     /// iteration.
-    pub fn reduce<F: Fn(U, T) -> U + Send + 'static, U: Send + 'static>(self, init: U, f: F) -> Future<U, E> {
+    pub fn reduce<F: Fn(U, T) -> U + Send + 'a, U: Send + 'a>(self, init: U, f: F) -> Future<'a, U, E> {
         self.reduce_async(init, move |curr, val| Ok(f(curr, val)))
     }
 
@@ -247,11 +246,11 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     ///
     /// Returns a future that will be completed with the result of the final
     /// iteration.
-    pub fn reduce_async<F, U, X>(self, init: X, action: F) -> Future<X, E>
+    pub fn reduce_async<F, U, X>(self, init: X, action: F) -> Future<'a, X, E>
             // TODO: Remove X generic, blocked on rust-lang/rust#23728
-            where F: Fn(X, T) -> U + Send + 'static,
-                  U: Async<Value=X, Error=E>,
-                  X: Send + 'static {
+            where F: Fn(X, T) -> U + Send + 'a,
+                  U: Async<'a, Value=X, Error=E>,
+                  X: Send + 'a {
 
         let (sender, ret) = Future::pair();
 
@@ -265,8 +264,8 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
     }
 
     fn do_reduce<F, U>(self, complete: Complete<U::Value, E>, curr: U::Value, f: F)
-            where F: Fn(U::Value, T) -> U + Send + 'static,
-                  U: Async<Error=E> {
+            where F: Fn(U::Value, T) -> U + Send + 'a,
+                  U: Async<'a, Error=E> {
 
         self.receive(move |head| {
             match head {
@@ -288,14 +287,14 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
 
     /// Returns a stream representing the `n` first values of the original
     /// stream.
-    pub fn take(self, n: u64) -> Stream<T, E> {
+    pub fn take(self, n: u64) -> Stream<'a, T, E> {
         let (sender, stream) = Stream::pair();
 
         self.do_take(n, sender);
         stream
     }
 
-    fn do_take<A>(self, n: u64, sender: A) where A: Async<Value=Sender<T, E>> {
+    fn do_take<A>(self, n: u64, sender: A) where A: Async<'a, Value=Sender<'a, T, E>> {
         if n == 0 {
             return;
         }
@@ -316,13 +315,13 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
         });
     }
 
-    pub fn take_while<F>(self, _f: F) -> Stream<T, E>
-            where F: Fn(&T) -> bool + Send + 'static {
+    pub fn take_while<F>(self, _f: F) -> Stream<'a, T, E>
+            where F: Fn(&T) -> bool + Send + 'a {
         unimplemented!();
     }
 
-    pub fn take_until<A>(self, cond: A) -> Stream<T, E>
-            where A: Async<Error=E> {
+    pub fn take_until<A>(self, cond: A) -> Stream<'a, T, E>
+            where A: Async<'a, Error=E> {
 
         super::select((cond, self))
             .and_then(move |(i, (cond, stream))| {
@@ -345,15 +344,15 @@ impl<T: Send + 'static, E: Send + 'static> Stream<T, E> {
      *
      */
 
-    fn from_core(core: StreamCore<T, E>) -> Stream<T, E> {
+    fn from_core(core: StreamCore<'a, T, E>) -> Stream<'a, T, E> {
         Stream { core: Some(core) }
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Async for Stream<T, E> {
-    type Value = Head<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for Stream<'a, T, E> {
+    type Value = Head<'a, T, E>;
     type Error = E;
-    type Cancel = Receipt<Stream<T, E>>;
+    type Cancel = Receipt<'a, Stream<'a, T, E>>;
 
     fn is_ready(&self) -> bool {
         core::get(&self.core).consumer_is_ready()
@@ -363,7 +362,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Stream<T, E> {
         core::get(&self.core).consumer_is_err()
     }
 
-    fn poll(mut self) -> Result<AsyncResult<Head<T, E>, E>, Stream<T, E>> {
+    fn poll(mut self) -> Result<AsyncResult<Head<'a, T, E>, E>, Stream<'a, T, E>> {
         let mut core = core::take(&mut self.core);
 
         match core.consumer_poll() {
@@ -372,7 +371,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Stream<T, E> {
         }
     }
 
-    fn ready<F: FnOnce(Stream<T, E>) + Send + 'static>(mut self, f: F) -> Receipt<Stream<T, E>> {
+    fn ready<F: FnOnce(Stream<'a, T, E>) + Send + 'a>(mut self, f: F) -> Receipt<'a, Stream<'a, T, E>> {
         let core = core::take(&mut self.core);
 
         match core.consumer_ready(move |core| f(Stream::from_core(core))) {
@@ -381,26 +380,26 @@ impl<T: Send + 'static, E: Send + 'static> Async for Stream<T, E> {
         }
     }
 
-    fn await(mut self) -> AsyncResult<Head<T, E>, E> {
+    fn await(mut self) -> AsyncResult<Head<'a, T, E>, E> {
         core::take(&mut self.core).consumer_await()
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Pair for Stream<T, E> {
-    type Tx = Sender<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Pair for Stream<'a, T, E> {
+    type Tx = Sender<'a, T, E>;
 
-    fn pair() -> (Sender<T, E>, Stream<T, E>) {
+    fn pair() -> (Sender<'a, T, E>, Stream<'a, T, E>) {
         Stream::pair()
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> fmt::Debug for Stream<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> fmt::Debug for Stream<'a, T, E> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "Stream<?>")
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Drop for Stream<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for Stream<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             core::take(&mut self.core).cancel();
@@ -408,8 +407,8 @@ impl<T: Send + 'static, E: Send + 'static> Drop for Stream<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Cancel<Stream<T, E>> for Receipt<Stream<T, E>> {
-    fn cancel(self) -> Option<Stream<T, E>> {
+impl<'a, T: Send + 'a, E: Send + 'a> Cancel<Stream<'a, T, E>> for Receipt<'a, Stream<'a, T, E>> {
+    fn cancel(self) -> Option<Stream<'a, T, E>> {
         let (core, count) = receipt::parts(self);
 
         if !core.is_some() {
@@ -432,11 +431,11 @@ impl<T: Send + 'static, E: Send + 'static> Cancel<Stream<T, E>> for Receipt<Stre
 
 /// The sending half of `Stream::pair()`. Can only be owned by a single task at
 /// a time.
-pub struct Sender<T: Send + 'static, E: Send + 'static> {
-    core: Option<StreamCore<T, E>>,
+pub struct Sender<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<StreamCore<'a, T, E>>,
 }
 
-impl<T: Send + 'static, E: Send + 'static> Sender<T, E> {
+impl<'a, T: Send, E: Send> Sender<'a, T, E> {
 
     // TODO: This fn would be nice to have, but isn't possible with the current
     // implementation of `send()` which requires the value slot of `Stream` to
@@ -452,7 +451,7 @@ impl<T: Send + 'static, E: Send + 'static> Sender<T, E> {
     /// Attempts to send a value to its `Stream`. Consumes self and returns a
     /// future representing the operation completing successfully and interest
     /// in the next value being expressed.
-    pub fn send(mut self, val: T) -> BusySender<T, E> {
+    pub fn send(mut self, val: T) -> BusySender<'a, T, E> {
         let mut core = core::take(&mut self.core);
         let val = Some((val, Stream { core: Some(core.clone()) }));
 
@@ -473,8 +472,8 @@ impl<T: Send + 'static, E: Send + 'static> Sender<T, E> {
         core::take(&mut self.core).complete(Err(AsyncError::aborted()), true);
     }
 
-    /// Send + 'static all the values in the given source
-    pub fn send_all<S: Source<Value=T>>(self, src: S) -> Future<Self, (S::Error, Self)> {
+    /// Send all the values in the given source
+    pub fn send_all<S: Source<'a, Value=T>>(self, src: S) -> Future<'a, Self, (S::Error, Self)> {
         src.send_all(self)
     }
 
@@ -484,15 +483,15 @@ impl<T: Send + 'static, E: Send + 'static> Sender<T, E> {
      *
      */
 
-    fn from_core(core: StreamCore<T, E>) -> Sender<T, E> {
+    fn from_core(core: StreamCore<'a, T, E>) -> Sender<'a, T, E> {
         Sender { core: Some(core) }
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Async for Sender<T, E> {
-    type Value = Sender<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for Sender<'a, T, E> {
+    type Value = Sender<'a, T, E>;
     type Error = ();
-    type Cancel = Receipt<Sender<T, E>>;
+    type Cancel = Receipt<'a, Sender<'a, T, E>>;
 
     fn is_ready(&self) -> bool {
         core::get(&self.core).producer_is_ready()
@@ -502,7 +501,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Sender<T, E> {
         core::get(&self.core).producer_is_err()
     }
 
-    fn poll(mut self) -> Result<AsyncResult<Sender<T, E>, ()>, Sender<T, E>> {
+    fn poll(mut self) -> Result<AsyncResult<Sender<'a, T, E>, ()>, Sender<'a, T, E>> {
         debug!("Sender::poll; is_ready={}", self.is_ready());
 
         let core = core::take(&mut self.core);
@@ -513,7 +512,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Sender<T, E> {
         }
     }
 
-    fn ready<F: FnOnce(Sender<T, E>) + Send + 'static>(mut self, f: F) -> Receipt<Sender<T, E>> {
+    fn ready<F: FnOnce(Sender<'a, T, E>) + Send + 'a>(mut self, f: F) -> Receipt<'a, Sender<'a, T, E>> {
         core::take(&mut self.core).producer_ready(move |core| {
             f(Sender::from_core(core))
         });
@@ -522,7 +521,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Sender<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Drop for Sender<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for Sender<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             debug!("Sender::drop(); cancelling future");
@@ -539,26 +538,26 @@ impl<T: Send + 'static, E: Send + 'static> Drop for Sender<T, E> {
  *
  */
 
-pub struct BusySender<T: Send + 'static, E: Send + 'static> {
-    core: Option<StreamCore<T, E>>,
+pub struct BusySender<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<StreamCore<'a, T, E>>,
 }
 
-impl<T: Send + 'static, E: Send + 'static> BusySender<T, E> {
+impl<'a, T: Send, E: Send> BusySender<'a, T, E> {
     /*
      *
      * ===== Internal Helpers =====
      *
      */
 
-    fn from_core(core: StreamCore<T, E>) -> BusySender<T, E> {
+    fn from_core(core: StreamCore<'a, T, E>) -> BusySender<'a, T, E> {
         BusySender { core: Some(core) }
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Async for BusySender<T, E> {
-    type Value = Sender<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for BusySender<'a, T, E> {
+    type Value = Sender<'a, T, E>;
     type Error = ();
-    type Cancel = Receipt<BusySender<T, E>>;
+    type Cancel = Receipt<'a, BusySender<'a, T, E>>;
 
     fn is_ready(&self) -> bool {
         core::get(&self.core).consumer_is_ready()
@@ -568,7 +567,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for BusySender<T, E> {
         core::get(&self.core).consumer_is_err()
     }
 
-    fn poll(mut self) -> Result<AsyncResult<Sender<T, E>, ()>, BusySender<T, E>> {
+    fn poll(mut self) -> Result<AsyncResult<Sender<'a, T, E>, ()>, BusySender<'a, T, E>> {
         debug!("Sender::poll; is_ready={}", self.is_ready());
 
         let core = core::take(&mut self.core);
@@ -579,7 +578,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for BusySender<T, E> {
         }
     }
 
-    fn ready<F: FnOnce(BusySender<T, E>) + Send + 'static>(mut self, f: F) -> Receipt<BusySender<T, E>> {
+    fn ready<F: FnOnce(BusySender<'a, T, E>) + Send + 'a>(mut self, f: F) -> Receipt<'a, BusySender<'a, T, E>> {
         core::take(&mut self.core).producer_ready(move |core| {
             f(BusySender::from_core(core))
         });
@@ -588,7 +587,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for BusySender<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Drop for BusySender<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for BusySender<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             let core = core::take(&mut self.core);
@@ -602,7 +601,7 @@ impl<T: Send + 'static, E: Send + 'static> Drop for BusySender<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> fmt::Debug for Sender<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> fmt::Debug for Sender<'a, T, E> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "Sender<?>")
     }
@@ -614,19 +613,20 @@ impl<T: Send + 'static, E: Send + 'static> fmt::Debug for Sender<T, E> {
  *
  */
 
-pub trait Source {
-    type Value: Send + 'static;
-    type Error: Send + 'static;
+pub trait Source<'a> {
+    type Value: Send + 'a;
+    type Error: Send + 'a;
 
-    fn send_all<E2: Send + 'static>(self, sender: Sender<Self::Value, E2>) ->
-        Future<Sender<Self::Value, E2>, (Self::Error, Sender<Self::Value, E2>)>;
+    fn send_all<E2: Send + 'a>(self, sender: Sender<'a, Self::Value, E2>) ->
+        Future<'a, Sender<'a, Self::Value, E2>, (Self::Error, Sender<'a, Self::Value, E2>)>;
 }
 
-impl<T: Send + 'static, E: Send + 'static> Source for Future<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Source<'a> for Future<'a, T, E> {
     type Value = T;
     type Error = E;
 
-    fn send_all<E2: Send + 'static>(self, sender: Sender<T, E2>) -> Future<Sender<T, E2>, (E, Sender<T, E2>)> {
+    fn send_all<E2: Send>(self, sender: Sender<'a, T, E2>)
+        -> Future<'a, Sender<'a, T, E2>, (E, Sender<'a, T, E2>)> {
         let (tx, rx) = Future::pair();
 
         self.receive(move |res| {
@@ -647,11 +647,12 @@ impl<T: Send + 'static, E: Send + 'static> Source for Future<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Source for Stream<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Source<'a> for Stream<'a, T, E> {
     type Value = T;
     type Error = E;
 
-    fn send_all<E2: Send + 'static>(self, sender: Sender<T, E2>) -> Future<Sender<T, E2>, (E, Sender<T, E2>)> {
+    fn send_all<E2: Send>(self, sender: Sender<'a, T, E2>)
+        -> Future<'a, Sender<'a, T, E2>, (E, Sender<'a, T, E2>)> {
         let (tx, rx) = Future::pair();
         send_stream(self, sender, tx);
         rx
@@ -659,10 +660,10 @@ impl<T: Send + 'static, E: Send + 'static> Source for Stream<T, E> {
 }
 
 // Perform the send
-fn send_stream<T: Send + 'static, E: Send + 'static, E2: Send + 'static>(
-    src: Stream<T, E>,
-    dst: Sender<T, E2>,
-    complete: Complete<Sender<T, E2>, (E, Sender<T, E2>)>) {
+fn send_stream<'a, T: Send + 'a, E: Send + 'a, E2: Send + 'a>(
+    src: Stream<'a, T, E>,
+    dst: Sender<'a, T, E2>,
+    complete: Complete<'a, Sender<'a, T, E2>, (E, Sender<'a, T, E2>)>) {
 
     src.receive(move |res| {
         match res {
@@ -682,24 +683,24 @@ fn send_stream<T: Send + 'static, E: Send + 'static, E2: Send + 'static>(
 
 /*
  *
- * ===== Receipt<Sender<T, E>> =====
+ * ===== Receipt<Sender<'a, T, E>> =====
  *
  */
 
-impl<T: Send + 'static, E: Send + 'static> Cancel<Sender<T, E>> for Receipt<Sender<T, E>> {
-    fn cancel(self) -> Option<Sender<T, E>> {
+impl<'a, T: Send + 'a, E: Send + 'a> Cancel<Sender<'a, T, E>> for Receipt<'a, Sender<'a, T, E>> {
+    fn cancel(self) -> Option<Sender<'a, T, E>> {
         None
     }
 }
 
 /*
  *
- * ===== Receipt<BusySender<T, E>> =====
+ * ===== Receipt<BusySender<'a, T, E>> =====
  *
  */
 
-impl<T: Send + 'static, E: Send + 'static> Cancel<BusySender<T, E>> for Receipt<BusySender<T, E>> {
-    fn cancel(self) -> Option<BusySender<T, E>> {
+impl<'a, T: Send + 'a, E: Send + 'a> Cancel<BusySender<'a, T, E>> for Receipt<'a, BusySender<'a, T, E>> {
+    fn cancel(self) -> Option<BusySender<'a, T, E>> {
         None
     }
 }
@@ -710,11 +711,11 @@ impl<T: Send + 'static, E: Send + 'static> Cancel<BusySender<T, E>> for Receipt<
  *
  */
 
-pub struct StreamIter<T: Send + 'static, E: Send + 'static> {
-    core: Option<StreamCore<T, E>>,
+pub struct StreamIter<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<StreamCore<'a, T, E>>,
 }
 
-impl<T: Send + 'static, E: Send + 'static> Iterator for StreamIter<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Iterator for StreamIter<'a, T, E> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
@@ -734,7 +735,7 @@ impl<T: Send + 'static, E: Send + 'static> Iterator for StreamIter<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Drop for StreamIter<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for StreamIter<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             core::take(&mut self.core).cancel();
@@ -742,6 +743,6 @@ impl<T: Send + 'static, E: Send + 'static> Drop for StreamIter<T, E> {
     }
 }
 
-pub fn from_core<T: Send + 'static, E: Send + 'static>(core: StreamCore<T, E>) -> Stream<T, E> {
+pub fn from_core<'a, T: Send + 'a, E: Send + 'a>(core: StreamCore<'a, T, E>) -> Stream<'a, T, E> {
     Stream { core: Some(core) }
 }

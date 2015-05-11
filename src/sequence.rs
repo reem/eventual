@@ -7,9 +7,9 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 
 /// Returns a `Stream` consisting of the completion of the supplied async
 /// values in the order that they are completed.
-pub fn sequence<I, A>(asyncs: I) -> Stream<A::Value, A::Error>
-        where I: IntoIterator<Item=A> + Send + 'static,
-              A: Async {
+pub fn sequence<'a, I, A>(asyncs: I) -> Stream<'a, A::Value, A::Error>
+        where I: IntoIterator<Item=A> + Send + 'a,
+              A: Async<'a> {
 
     // Create a stream pair
     let (tx, rx) = Stream::pair();
@@ -32,9 +32,9 @@ pub fn sequence<I, A>(asyncs: I) -> Stream<A::Value, A::Error>
 // multiple threads. However, assuming no bugs, the cross thread memory access
 // should be safe as it is coordinated via atomic variables and fences.
 
-fn setup<I, A>(asyncs: I, sender: Sender<A::Value, A::Error>)
+fn setup<'a, I, A>(asyncs: I, sender: Sender<'a, A::Value, A::Error>)
         where I: IntoIterator<Item=A>,
-              A: Async {
+              A: Async<'a> {
 
     // Collect async values into a vec, the vec will be used later for storage
     let vec: Vec<Option<A>> = asyncs.into_iter()
@@ -76,19 +76,19 @@ const SEND: usize = 2; // A thread is currently sending a value
 const FAIL: usize = 3; // The sender has failed
 const DROP: usize = 4; // The consumer is no longer interested in values
 
-struct Core<A: Async> {
+struct Core<'a, A: Async<'a>> {
     queue: Vec<Option<A>>,
     next: AtomicUsize,    // Next index to send to consumer
     ready: AtomicUsize,   // The number of ready async values
     state: AtomicUsize,   // The sender state
     enqueue: AtomicUsize, // The position at which to enqueue the value
-    sender: Option<Sender<A::Value, A::Error>>,
+    sender: Option<Sender<'a, A::Value, A::Error>>,
 }
 
-struct Inner<A: Async>(Arc<UnsafeCell<Core<A>>>);
+struct Inner<'a, A: Async<'a>>(Arc<UnsafeCell<Core<'a, A>>>);
 
-impl<A: Async> Inner<A> {
-    fn new(queue: Vec<Option<A>>, sender: Sender<A::Value, A::Error>) -> Inner<A> {
+impl<'a, A: Async<'a>> Inner<'a, A> {
+    fn new(queue: Vec<Option<A>>, sender: Sender<'a, A::Value, A::Error>) -> Inner<'a, A> {
         let core = Core {
             queue: queue,
             next: AtomicUsize::new(0),
@@ -155,7 +155,7 @@ impl<A: Async> Inner<A> {
         }
     }
 
-    fn send_ready(&mut self, sender: Sender<A::Value, A::Error>, prev: usize) {
+    fn send_ready(&mut self, sender: Sender<'a, A::Value, A::Error>, prev: usize) {
         self.sender = Some(sender);
 
         // Changing the state to IDLE must happen here in order to prevent a
@@ -197,25 +197,25 @@ impl<A: Async> Inner<A> {
     }
 }
 
-impl<A: Async> ops::Deref for Inner<A> {
-    type Target = Core<A>;
+impl<'a, A: Async<'a>> ops::Deref for Inner<'a, A> {
+    type Target = Core<'a, A>;
 
-    fn deref(&self) -> &Core<A> {
+    fn deref(&self) -> &Core<'a, A> {
         unsafe { mem::transmute(self.0.get()) }
     }
 }
 
-impl<A: Async> ops::DerefMut for Inner<A> {
-    fn deref_mut(&mut self) -> &mut Core<A> {
+impl<'a, A: Async<'a>> ops::DerefMut for Inner<'a, A> {
+    fn deref_mut(&mut self) -> &mut Core<'a, A> {
         unsafe { mem::transmute(self.0.get()) }
     }
 }
 
-impl<A: Async> Clone for Inner<A> {
-    fn clone(&self) -> Inner<A> {
+impl<'a, A: Async<'a>> Clone for Inner<'a, A> {
+    fn clone(&self) -> Inner<'a, A> {
         Inner(self.0.clone())
     }
 }
 
-unsafe impl<A> Send for Inner<A> { }
-unsafe impl<A> Sync for Inner<A> { }
+unsafe impl<'a, A: Async<'a>> Send for Inner<'a, A> { }
+unsafe impl<'a, A: Async<'a>> Sync for Inner<'a, A> { }

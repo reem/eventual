@@ -84,9 +84,9 @@ mod stream;
 mod timer;
 
 /// A value representing an asynchronous computation
-pub trait Async : Send + 'static + Sized {
-    type Value: Send + 'static;
-    type Error: Send + 'static;
+pub trait Async<'a>: Send + Sized + 'a {
+    type Value: Send + 'a;
+    type Error: Send + 'a;
     type Cancel: Cancel<Self>;
 
     /// Returns true if `expect` will succeed.
@@ -109,11 +109,11 @@ pub trait Async : Send + 'static + Sized {
 
     /// Invokes the given function when the Async instance is ready to be
     /// consumed.
-    fn ready<F>(self, f: F) -> Self::Cancel where F: FnOnce(Self) + Send + 'static;
+    fn ready<F>(self, f: F) -> Self::Cancel where F: FnOnce(Self) + Send + 'a;
 
     /// Invoke the callback with the resolved `Async` result.
     fn receive<F>(self, f: F)
-            where F: FnOnce(AsyncResult<Self::Value, Self::Error>) + Send + 'static {
+            where F: FnOnce(AsyncResult<Self::Value, Self::Error>) + Send + 'a {
         self.ready(move |async| {
             match async.poll() {
                 Ok(res) => f(res),
@@ -152,7 +152,7 @@ pub trait Async : Send + 'static + Sized {
     ///
     /// If the original future completes successfully, the future returned by
     /// this method completes with the completion value of `next`.
-    fn and<U: Async<Error=Self::Error>>(self, next: U) -> Future<U::Value, Self::Error> {
+    fn and<U: Async<'a, Error=Self::Error>>(self, next: U) -> Future<'a, U::Value, Self::Error> {
         self.and_then(move |_| next)
     }
 
@@ -186,9 +186,9 @@ pub trait Async : Send + 'static + Sized {
     ///     Ok(())
     /// }).await();
     /// ```
-    fn and_then<F, U: Async<Error=Self::Error>>(self, f: F) -> Future<U::Value, Self::Error>
-            where F: FnOnce(Self::Value) -> U + Send + 'static,
-                  U::Value: Send + 'static {
+    fn and_then<F, U: Async<'a, Error=Self::Error>>(self, f: F) -> Future<'a, U::Value, Self::Error>
+            where F: FnOnce(Self::Value) -> U + Send + 'a,
+                  U::Value: Send + 'a {
         let (complete, ret) = Future::pair();
 
         complete.receive(move |c| {
@@ -223,8 +223,8 @@ pub trait Async : Send + 'static + Sized {
     /// If the original future completes with an error, the future returned by
     /// this method will complete with the completion value of the `alt` future
     /// passed in. That can be either a success or error.
-    fn or<A>(self, alt: A) -> Future<Self::Value, A::Error>
-            where A: Async<Value=Self::Value> {
+    fn or<A>(self, alt: A) -> Future<'a, Self::Value, A::Error>
+            where A: Async<'a, Value=Self::Value> {
         self.or_else(move |_| alt)
     }
 
@@ -238,9 +238,9 @@ pub trait Async : Send + 'static + Sized {
     /// the callback passed to the method, which should return a future. The
     /// future returned by this method will complete with the completion value
     /// of that future. That can be either a success or error.
-    fn or_else<F, A>(self, f: F) -> Future<Self::Value, A::Error>
-            where F: FnOnce(Self::Error) -> A + Send + 'static,
-                  A: Async<Value=Self::Value> {
+    fn or_else<F, A>(self, f: F) -> Future<'a, Self::Value, A::Error>
+            where F: FnOnce(Self::Error) -> A + Send + 'a,
+                  A: Async<'a, Value=Self::Value> {
 
         let (complete, ret) = Future::pair();
 
@@ -274,7 +274,7 @@ pub trait Pair {
     fn pair() -> (Self::Tx, Self);
 }
 
-pub trait Cancel<A: Send + 'static> : Send + 'static {
+pub trait Cancel<A: Send>: Send {
     fn cancel(self) -> Option<A>;
 }
 
@@ -284,7 +284,7 @@ pub trait Cancel<A: Send + 'static> : Send + 'static {
  *
  */
 
-impl<T: Send + 'static, E: Send + 'static> Async for Result<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for Result<T, E> {
     type Value = T;
     type Error = E;
     type Cancel = Option<Result<T, E>>;
@@ -301,7 +301,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Result<T, E> {
         Ok(self.await())
     }
 
-    fn ready<F: FnOnce(Result<T, E>) + Send + 'static>(self, f: F) -> Option<Result<T, E>> {
+    fn ready<F: FnOnce(Result<T, E>) + Send + 'a>(self, f: F) -> Option<Result<T, E>> {
         f(self);
         None
     }
@@ -311,14 +311,14 @@ impl<T: Send + 'static, E: Send + 'static> Async for Result<T, E> {
     }
 }
 
-impl<A: Send + 'static> Cancel<A> for Option<A> {
+impl<A: Send> Cancel<A> for Option<A> {
     fn cancel(self) -> Option<A> {
         self
     }
 }
 
 /// Convenience implementation for (), to ease use of side-effecting functions returning unit
-impl Async for () {
+impl<'a> Async<'a> for () {
     type Value  = ();
     type Error  = ();
     type Cancel = Option<()>;
@@ -335,7 +335,7 @@ impl Async for () {
         Ok(Ok(self))
     }
 
-    fn ready<F: FnOnce(()) + Send + 'static>(self, f: F) -> Option<()> {
+    fn ready<F: FnOnce(()) + Send + 'a>(self, f: F) -> Option<()> {
         f(self);
         None
     }
@@ -354,12 +354,12 @@ impl Async for () {
 pub type AsyncResult<T, E> = Result<T, AsyncError<E>>;
 
 #[derive(Eq, PartialEq)]
-pub enum AsyncError<E: Send + 'static> {
+pub enum AsyncError<E: Send> {
     Failed(E),
     Aborted,
 }
 
-impl<E: Send + 'static> AsyncError<E> {
+impl<E: Send> AsyncError<E> {
     pub fn failed(err: E) -> AsyncError<E> {
         AsyncError::Failed(err)
     }
@@ -397,7 +397,7 @@ impl<E: Send + 'static> AsyncError<E> {
     }
 }
 
-impl<E: Send + 'static + fmt::Debug> fmt::Debug for AsyncError<E> {
+impl<E: Send + fmt::Debug> fmt::Debug for AsyncError<E> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             AsyncError::Failed(ref e) => write!(fmt, "AsyncError::Failed({:?})", e),
@@ -413,11 +413,11 @@ impl<E: Send + 'static + fmt::Debug> fmt::Debug for AsyncError<E> {
  */
 
 // Needed to allow virtual dispatch to Receive
-trait BoxedReceive<T> : Send + 'static {
+trait BoxedReceive<T>: Send {
     fn receive_boxed(self: Box<Self>, val: T);
 }
 
-impl<F: FnOnce(T) + Send + 'static, T> BoxedReceive<T> for F {
+impl<F: FnOnce(T) + Send, T> BoxedReceive<T> for F {
     fn receive_boxed(self: Box<F>, val: T) {
         (*self)(val)
     }

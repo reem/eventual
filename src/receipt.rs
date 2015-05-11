@@ -2,16 +2,16 @@ use super::Async;
 use super::core::Core;
 use std::marker::PhantomData;
 
-pub struct Receipt<A: Async> {
-    core: Option<Core<A::Value, A::Error>>,
+pub struct Receipt<'a, A: Async<'a>> {
+    core: Option<Core<'a, A::Value, A::Error>>,
     count: u64,
     marker: PhantomData<A>,
 }
 
-unsafe impl<A: Async> Send for Receipt<A> { }
+unsafe impl<'a, A: Async<'a>> Send for Receipt<'a, A> { }
 
-pub fn new<A, T: Send + 'static, E: Send + 'static>(core: Core<T, E>, count: u64) -> Receipt<A>
-        where A: Async<Value=T, Error=E> {
+pub fn new<'a, A, T: Send, E: Send>(core: Core<'a, T, E>, count: u64) -> Receipt<'a, A>
+        where A: Async<'a, Value=T, Error=E> {
     Receipt {
         core: Some(core),
         count: count,
@@ -19,7 +19,7 @@ pub fn new<A, T: Send + 'static, E: Send + 'static>(core: Core<T, E>, count: u64
     }
 }
 
-pub fn none<A: Async>() -> Receipt<A> {
+pub fn none<'a, A: Async<'a>>() -> Receipt<'a, A> {
     Receipt {
         core: None,
         count: 0,
@@ -27,7 +27,7 @@ pub fn none<A: Async>() -> Receipt<A> {
     }
 }
 
-pub fn parts<A, T: Send + 'static, E: Send + 'static>(receipt: Receipt<A>) -> (Option<Core<T, E>>, u64)
-        where A: Async<Value=T, Error=E> {
+pub fn parts<'a, A, T: Send, E: Send>(receipt: Receipt<'a, A>) -> (Option<Core<'a, T, E>>, u64)
+        where A: Async<'a, Value=T, Error=E> {
     (receipt.core, receipt.count)
 }

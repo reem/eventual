@@ -17,12 +17,12 @@ use std::fmt;
  */
 
 #[must_use = "futures are lazy and do nothing unless consumed"]
-pub struct Future<T: Send + 'static, E: Send + 'static> {
-    core: Option<Core<T, E>>,
+pub struct Future<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<Core<'a, T, E>>,
 }
 
-impl<T: Send +'static, E: Send +'static> Future<T, E> {
-    pub fn pair() -> (Complete<T, E>, Future<T, E>) {
+impl<'a, T: Send + 'a, E: Send + 'a> Future<'a, T, E> {
+    pub fn pair() -> (Complete<'a, T, E>, Future<'a, T, E>) {
         let core = Core::new();
         let future = Future { core: Some(core.clone()) };
 
@@ -39,7 +39,7 @@ impl<T: Send +'static, E: Send +'static> Future<T, E> {
     ///     Ok(val + 1)
     /// });
     /// ```
-    pub fn of(val: T) -> Future<T, E> {
+    pub fn of(val: T) -> Future<'a, T, E> {
         Future { core: Some(Core::with_value(Ok(val))) }
     }
 
@@ -53,7 +53,7 @@ impl<T: Send +'static, E: Send +'static> Future<T, E> {
     ///     Ok::<(), ()>(())
     /// }).fire();
     /// ```
-    pub fn error(err: E) -> Future<T, E> {
+    pub fn error(err: E) -> Future<'a, T, E> {
         let core = Core::with_value(Err(AsyncError::failed(err)));
         Future { core: Some(core) }
     }
@@ -79,15 +79,15 @@ impl<T: Send +'static, E: Send +'static> Future<T, E> {
     /// });
     /// // the HTTP request has now happened
     /// ```
-    pub fn lazy<F, R>(f: F) -> Future<T, E>
-        where F: FnOnce() -> R + Send + 'static,
-              R: Async<Value=T, Error=E> {
+    pub fn lazy<F, R>(f: F) -> Future<'a, T, E>
+        where F: FnOnce() -> R + Send + 'a,
+              R: Async<'a, Value=T, Error=E> {
 
         let (complete, future) = Future::pair();
 
         // Complete the future with the provided function once consumer
         // interest has been registered.
-        complete.receive(move |c: AsyncResult<Complete<T, E>, ()>| {
+        complete.receive(move |c: AsyncResult<Complete<'a, T, E>, ()>| {
             if let Ok(c) = c {
                 f().receive(move |res| {
                     match res {
@@ -107,18 +107,18 @@ impl<T: Send +'static, E: Send +'static> Future<T, E> {
      *
      */
 
-    pub fn map<F, U>(self, f: F) -> Future<U, E>
-        where F: FnOnce(T) -> U + Send + 'static,
-              U: Send + 'static {
+    pub fn map<F, U>(self, f: F) -> Future<'a, U, E>
+        where F: FnOnce(T) -> U + Send + 'a,
+              U: Send {
         self.and_then(move |val| Ok(f(val)))
     }
 
     /// Returns a new future with an identical value as the original. If the
     /// original future fails, apply the given function on the error and use
     /// the result as the error of the new future.
-    pub fn map_err<F, U>(self, f: F) -> Future<T, U>
-            where F: FnOnce(E) -> U + Send + 'static,
-                  U: Send + 'static {
+    pub fn map_err<F, U>(self, f: F) -> Future<'a, T, U>
+            where F: FnOnce(E) -> U + Send + 'a,
+                  U: Send {
         let (complete, future) = Future::pair();
 
         complete.receive(move |res| {
@@ -142,12 +142,12 @@ impl<T: Send +'static, E: Send +'static> Future<T, E> {
      *
      */
 
-    fn from_core(core: Core<T, E>) -> Future<T, E> {
+    fn from_core(core: Core<'a, T, E>) -> Future<'a, T, E> {
         Future { core: Some(core) }
     }
 }
 
-impl<T: Send + 'static> Future<T, ()> {
+impl<T: Send + 'static> Future<'static, T, ()> {
     /// Returns a `Future` representing the completion of the given closure.
     /// The closure will be executed on a newly spawned thread.
     ///
@@ -160,7 +160,7 @@ impl<T: Send + 'static> Future<T, ()> {
     /// });
     ///
     /// assert_eq!(100, future.await().unwrap());
-    pub fn spawn<F>(f: F) -> Future<T, ()>
+    pub fn spawn<F>(f: F) -> Future<'static, T, ()>
         where F: FnOnce() -> T + Send + 'static {
 
         use std::thread;
@@ -173,17 +173,17 @@ impl<T: Send + 'static> Future<T, ()> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Future<Option<(T, Stream<T, E>)>, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Future<'a, Option<(T, Stream<'a, T, E>)>, E> {
     /// An adapter that converts any future into a one-value stream
-    pub fn to_stream(mut self) -> Stream<T, E> {
+    pub fn to_stream(mut self) -> Stream<'a, T, E> {
         stream::from_core(core::take(&mut self.core))
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Async for Future<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for Future<'a, T, E> {
     type Value = T;
     type Error = E;
-    type Cancel = Receipt<Future<T, E>>;
+    type Cancel = Receipt<'a, Future<'a, T, E>>;
 
 
     fn is_ready(&self) -> bool {
@@ -194,7 +194,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Future<T, E> {
         core::get(&self.core).consumer_is_err()
     }
 
-    fn poll(mut self) -> Result<AsyncResult<T, E>, Future<T, E>> {
+    fn poll(mut self) -> Result<AsyncResult<T, E>, Future<'a, T, E>> {
         let mut core = core::take(&mut self.core);
 
         match core.consumer_poll() {
@@ -203,7 +203,7 @@ impl<T: Send + 'static, E: Send + 'static> Async for Future<T, E> {
         }
     }
 
-    fn ready<F: FnOnce(Future<T, E>) + Send + 'static>(mut self, f: F) -> Receipt<Future<T, E>> {
+    fn ready<F: FnOnce(Future<'a, T, E>) + Send + 'a>(mut self, f: F) -> Receipt<'a, Future<'a, T, E>> {
         let core = core::take(&mut self.core);
 
         match core.consumer_ready(move |core| f(Future::from_core(core))) {
@@ -217,21 +217,21 @@ impl<T: Send + 'static, E: Send + 'static> Async for Future<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Pair for Future<T, E> {
-    type Tx = Complete<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Pair for Future<'a, T, E> {
+    type Tx = Complete<'a, T, E>;
 
-    fn pair() -> (Complete<T, E>, Future<T, E>) {
+    fn pair() -> (Complete<'a, T, E>, Future<'a, T, E>) {
         Future::pair()
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> fmt::Debug for Future<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> fmt::Debug for Future<'a, T, E> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "Future {{ ... }}")
     }
 }
 
-impl<T: Send, E: Send> Drop for Future<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for Future<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             core::take(&mut self.core).cancel();
@@ -239,8 +239,8 @@ impl<T: Send, E: Send> Drop for Future<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Cancel<Future<T, E>> for Receipt<Future<T, E>> {
-    fn cancel(self) -> Option<Future<T, E>> {
+impl<'a, T: Send + 'a, E: Send + 'a> Cancel<Future<'a, T, E>> for Receipt<'a, Future<'a, T, E>> {
+    fn cancel(self) -> Option<Future<'a, T, E>> {
         let (core, count) = receipt::parts(self);
 
         if !core.is_some() {
@@ -278,11 +278,11 @@ impl<T: Send + 'static, E: Send + 'static> Cancel<Future<T, E>> for Receipt<Futu
 /// }).fire();
 /// ```
 #[must_use = "Futures must be completed or they will panic on access"]
-pub struct Complete<T: Send + 'static, E: Send + 'static> {
-    core: Option<Core<T, E>>,
+pub struct Complete<'a, T: Send + 'a, E: Send + 'a> {
+    core: Option<Core<'a, T, E>>,
 }
 
-impl<T: Send + 'static, E: Send + 'static> Complete<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Complete<'a, T, E> {
     /// Fulfill the associated promise with a value
     pub fn complete(mut self, val: T) {
         core::take(&mut self.core).complete(Ok(val), true);
@@ -306,7 +306,7 @@ impl<T: Send + 'static, E: Send + 'static> Complete<T, E> {
         core::get(&self.core).producer_is_err()
     }
 
-    fn poll(mut self) -> Result<AsyncResult<Complete<T, E>, ()>, Complete<T, E>> {
+    fn poll(mut self) -> Result<AsyncResult<Complete<'a, T, E>, ()>, Complete<'a, T, E>> {
         debug!("Complete::poll; is_ready={}", self.is_ready());
 
         let core = core::take(&mut self.core);
@@ -317,12 +317,12 @@ impl<T: Send + 'static, E: Send + 'static> Complete<T, E> {
         }
     }
 
-    pub fn ready<F: FnOnce(Complete<T, E>) + Send + 'static>(mut self, f: F) {
+    pub fn ready<F: FnOnce(Complete<'a, T, E>) + Send + 'a>(mut self, f: F) {
         core::take(&mut self.core)
             .producer_ready(move |core| f(Complete::from_core(core)));
     }
 
-    pub fn await(self) -> AsyncResult<Complete<T, E>, ()> {
+    pub fn await(self) -> AsyncResult<Complete<'a, T, E>, ()> {
         core::get(&self.core).producer_await();
         self.poll().ok().expect("Complete not ready")
     }
@@ -333,15 +333,15 @@ impl<T: Send + 'static, E: Send + 'static> Complete<T, E> {
      *
      */
 
-    fn from_core(core: Core<T, E>) -> Complete<T, E> {
+    fn from_core(core: Core<'a, T, E>) -> Complete<'a, T, E> {
         Complete { core: Some(core) }
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Async for Complete<T, E> {
-    type Value = Complete<T, E>;
+impl<'a, T: Send + 'a, E: Send + 'a> Async<'a> for Complete<'a, T, E> {
+    type Value = Complete<'a, T, E>;
     type Error = ();
-    type Cancel = Receipt<Complete<T, E>>;
+    type Cancel = Receipt<'a, Complete<'a, T, E>>;
 
     fn is_ready(&self) -> bool {
         Complete::is_ready(self)
@@ -351,17 +351,17 @@ impl<T: Send + 'static, E: Send + 'static> Async for Complete<T, E> {
         Complete::is_err(self)
     }
 
-    fn poll(self) -> Result<AsyncResult<Complete<T, E>, ()>, Complete<T, E>> {
+    fn poll(self) -> Result<AsyncResult<Complete<'a, T, E>, ()>, Complete<'a, T, E>> {
         Complete::poll(self)
     }
 
-    fn ready<F: FnOnce(Complete<T, E>) + Send + 'static>(self, f: F) -> Receipt<Complete<T, E>> {
+    fn ready<F: FnOnce(Complete<'a, T, E>) + Send + 'a>(self, f: F) -> Receipt<'a, Complete<'a, T, E>> {
         Complete::ready(self, f);
         receipt::none()
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Drop for Complete<T, E> {
+impl<'a, T: Send + 'a, E: Send + 'a> Drop for Complete<'a, T, E> {
     fn drop(&mut self) {
         if self.core.is_some() {
             debug!("Complete::drop -- canceling future");
@@ -370,14 +370,14 @@ impl<T: Send + 'static, E: Send + 'static> Drop for Complete<T, E> {
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> fmt::Debug for Complete<T, E> {
+impl<'a, T: Send, E: Send> fmt::Debug for Complete<'a, T, E> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         write!(fmt, "Complete {{ ... }}")
     }
 }
 
-impl<T: Send + 'static, E: Send + 'static> Cancel<Complete<T, E>> for Receipt<Complete<T, E>> {
-    fn cancel(self) -> Option<Complete<T, E>> {
+impl<'a, T: Send + 'a, E: Send + 'a> Cancel<Complete<'a, T, E>> for Receipt<'a, Complete<'a, T, E>> {
+    fn cancel(self) -> Option<Complete<'a, T, E>> {
         None
     }
 }

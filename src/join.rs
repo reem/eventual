@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{self, AtomicIsize};
 use std::sync::atomic::Ordering;
 
-pub fn join<J: Join<T, E>, T: Send + 'static, E: Send + 'static>(asyncs: J) -> Future<T, E> {
+pub fn join<'a, J: Join<'a, T, E>, T: Send + 'a, E: Send + 'a>(asyncs: J) -> Future<'a, T, E> {
     let (complete, future) = Future::pair();
 
     // Don't do any work until the consumer registers interest in the completed
@@ -18,8 +18,8 @@ pub fn join<J: Join<T, E>, T: Send + 'static, E: Send + 'static>(asyncs: J) -> F
     future
 }
 
-pub trait Join<T, E> : Send + 'static {
-    fn join(self, complete: Complete<T, E>);
+pub trait Join<'a, T: Send + 'a, E: Send + 'a>: Send {
+    fn join(self, complete: Complete<'a, T, E>);
 }
 
 /// Stores the values as they are completed, before the join succeeds
@@ -60,15 +60,15 @@ impl<T1, T2, T3> Partial<(T1, T2, T3)> for (Option<T1>, Option<T2>, Option<T3>) 
 
 /// Join in progress state
 ///
-struct Progress<P: Partial<R>, R: Send + 'static, E: Send + 'static> {
-    inner: Arc<UnsafeCell<ProgressInner<P, R, E>>>,
+struct Progress<'a, P: Partial<R>, R: Send + 'a, E: Send + 'a> {
+    inner: Arc<UnsafeCell<ProgressInner<'a, P, R, E>>>,
 }
 
-unsafe impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Sync for Progress<P, R, E> {}
-unsafe impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Send for Progress<P, R, E> {}
+unsafe impl<'a, P: Partial<R>, R: Send, E: Send> Sync for Progress<'a, P, R, E> {}
+unsafe impl<'a, P: Partial<R>, R: Send, E: Send> Send for Progress<'a, P, R, E> {}
 
-impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Progress<P, R, E> {
-    fn new(vals: P, complete: Complete<R, E>, remaining: isize) -> Progress<P, R, E> {
+impl<'a, P: Partial<R>, R: Send, E: Send> Progress<'a, P, R, E> {
+    fn new(vals: P, complete: Complete<'a, R, E>, remaining: isize) -> Progress<'a, P, R, E> {
         let inner = Arc::new(UnsafeCell::new(ProgressInner {
             vals: vals,
             complete: Some(complete),
@@ -103,7 +103,7 @@ impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Progress<P, R, E> {
         }
     }
 
-    fn vals_mut<'a>(&'a self) -> &'a mut P {
+    fn vals_mut<'r>(&'r self) -> &'r mut P {
         &mut self.inner_mut().vals
     }
 
@@ -122,15 +122,15 @@ impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Progress<P, R, E> {
     }
 }
 
-impl<P: Partial<R>, R: Send + 'static, E: Send + 'static> Clone for Progress<P, R, E> {
-    fn clone(&self) -> Progress<P, R, E> {
+impl<'a, P: Partial<R>, R: Send + 'a, E: Send + 'a> Clone for Progress<'a, P, R, E> {
+    fn clone(&self) -> Progress<'a, P, R, E> {
         Progress { inner: self.inner.clone() }
     }
 }
 
-struct ProgressInner<P: Partial<R>, R: Send + 'static, E: Send + 'static> {
+struct ProgressInner<'a, P: Partial<R>, R: Send + 'a, E: Send + 'a> {
     vals: P,
-    complete: Option<Complete<R, E>>,
+    complete: Option<Complete<'a, R, E>>,
     remaining: AtomicIsize,
 }
 
@@ -176,8 +176,8 @@ macro_rules! component {
  *
  */
 
-impl<A: Async> Join<Vec<A::Value>, A::Error> for Vec<A> {
-    fn join(self, complete: Complete<Vec<A::Value>, A::Error>) {
+impl<'a, A: Async<'a>> Join<'a, Vec<A::Value>, A::Error> for Vec<A> {
+    fn join(self, complete: Complete<'a, Vec<A::Value>, A::Error>) {
         let mut vec = Vec::with_capacity(self.len());
 
         for _ in 0..self.len() {
@@ -229,12 +229,12 @@ impl<A: Async> Join<Vec<A::Value>, A::Error> for Vec<A> {
  *
  */
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, E> Join<(A1::Value, A2::Value), E> for (A1, A2)
-        where E: Send + 'static,
-              A1::Value: Send + 'static,
-              A2::Value: Send + 'static {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>, E> Join<'a, (A1::Value, A2::Value), E> for (A1, A2)
+        where E: Send + 'a,
+              A1::Value: Send,
+              A2::Value: Send {
 
-    fn join(self, complete: Complete<(<A1 as Async>::Value, <A2 as Async>::Value), E>) {
+    fn join(self, complete: Complete<'a, (<A1 as Async>::Value, <A2 as Async>::Value), E>) {
         let (a1, a2) = self;
         let p = Progress::new((None, None), complete, 2);
 
@@ -243,13 +243,13 @@ impl<A1: Async<Error=E>, A2: Async<Error=E>, E> Join<(A1::Value, A2::Value), E> 
     }
 }
 
-impl<A1: Async<Error=E>, A2: Async<Error=E>, A3: Async<Error=E>, E> Join<(A1::Value, A2::Value, A3::Value), E> for (A1, A2, A3)
-        where E: Send + 'static,
-              A1::Value: Send + 'static,
-              A2::Value: Send + 'static,
-              A3::Value: Send + 'static {
+impl<'a, A1: Async<'a, Error=E>, A2: Async<'a, Error=E>, A3: Async<'a, Error=E>, E> Join<'a, (A1::Value, A2::Value, A3::Value), E> for (A1, A2, A3)
+        where E: Send + 'a,
+              A1::Value: Send,
+              A2::Value: Send,
+              A3::Value: Send {
 
-    fn join(self, complete: Complete<(A1::Value, A2::Value, A3::Value), E>) {
+    fn join(self, complete: Complete<'a, (A1::Value, A2::Value, A3::Value), E>) {
         let (a1, a2, a3) = self;
         let p = Progress::new((None, None, None), complete, 3);
 

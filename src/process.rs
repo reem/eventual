@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_IN_FLIGHT: usize = (1 << 16) - 1;
 
-pub fn process<T, U, F>(source: Stream<T, U::Error>, in_flight: usize, action: F) -> Stream<U::Value, U::Error>
-        where T: Send + 'static,
-              U: Async,
-              F: Fn(T) -> U + Send + 'static {
+pub fn process<'a, T, U, F>(source: Stream<'a, T, U::Error>, in_flight: usize, action: F) -> Stream<'a, U::Value, U::Error>
+        where T: Send,
+              U: Async<'a>,
+              F: Fn(T) -> U + Send + 'a {
 
     // New stream
     let (tx, rx) = Stream::pair();
@@ -29,36 +29,36 @@ pub fn process<T, U, F>(source: Stream<T, U::Error>, in_flight: usize, action: F
     rx
 }
 
-fn setup<T, U, F>(source: Stream<T, U::Error>, in_flight: usize, action: F, dest: Sender<U::Value, U::Error>)
-        where T: Send + 'static,
-              U: Async,
-              F: Fn(T) -> U + Send + 'static {
+fn setup<'a, T, U, F>(source: Stream<'a, T, U::Error>, in_flight: usize, action: F, dest: Sender<'a, U::Value, U::Error>)
+        where T: Send,
+              U: Async<'a>,
+              F: Fn(T) -> U + Send + 'a {
 
     let mut inner = Inner::new(source, in_flight, action, dest);
     inner.maybe_process_next(false);
 }
 
-struct Core<T: Send + 'static, U: Async, F> {
+struct Core<'a, T: Send + 'a, U: Async<'a>, F> {
     max: usize,
     queue: ArrayQueue<AsyncResult<U::Value, U::Error>>,
-    sender: Option<Sender<U::Value, U::Error>>,
-    source: Option<Source<T, U, F>>,
+    sender: Option<Sender<'a, U::Value, U::Error>>,
+    source: Option<Source<'a, T, U, F>>,
     consume_state: AtomicState,
     produce_state: AtomicState,
 }
 
-struct Source<T: Send + 'static, U: Async, F> {
-    stream: Stream<T, U::Error>,
+struct Source<'a, T: Send + 'a, U: Async<'a>, F> {
+    stream: Stream<'a, T, U::Error>,
     action: F,
 }
 
-struct Inner<T: Send + 'static, U: Async, F>(Arc<UnsafeCell<Core<T, U, F>>>);
+struct Inner<'a, T: Send + 'a, U: Async<'a>, F>(Arc<UnsafeCell<Core<'a, T, U, F>>>);
 
-impl<T: Send + 'static, U: Async, F: Fn(T) -> U + Send + 'static> Inner<T, U, F> {
-    fn new(source: Stream<T, U::Error>,
+impl<'a, T: Send, U: Async<'a>, F: Fn(T) -> U + Send + 'static> Inner<'a, T, U, F> {
+    fn new(source: Stream<'a, T, U::Error>,
            in_flight: usize,
            action: F,
-           dest: Sender<U::Value, U::Error>) -> Inner<T, U, F> {
+           dest: Sender<'a, U::Value, U::Error>) -> Inner<'a, T, U, F> {
 
         let core = Core {
             max: in_flight,
@@ -269,28 +269,28 @@ impl<T: Send + 'static, U: Async, F: Fn(T) -> U + Send + 'static> Inner<T, U, F>
     }
 }
 
-impl<T: Send + 'static, U: Async, F> ops::Deref for Inner<T, U, F> {
-    type Target = Core<T, U, F>;
+impl<'a, T: Send, U: Async<'a>, F> ops::Deref for Inner<'a, T, U, F> {
+    type Target = Core<'a, T, U, F>;
 
-    fn deref(&self) -> &Core<T, U, F> {
+    fn deref(&self) -> &Core<'a, T, U, F> {
         unsafe { mem::transmute(self.0.get()) }
     }
 }
 
-impl<T: Send + 'static, U: Async, F> ops::DerefMut for Inner<T, U, F> {
-    fn deref_mut(&mut self) -> &mut Core<T, U, F> {
+impl<'a, T: Send, U: Async<'a>, F> ops::DerefMut for Inner<'a, T, U, F> {
+    fn deref_mut(&mut self) -> &mut Core<'a, T, U, F> {
         unsafe { mem::transmute(self.0.get()) }
     }
 }
 
-impl<T: Send + 'static, U: Async, F> Clone for Inner<T, U, F> {
-    fn clone(&self) -> Inner<T, U, F> {
+impl<'a, T: Send, U: Async<'a>, F> Clone for Inner<'a, T, U, F> {
+    fn clone(&self) -> Inner<'a, T, U, F> {
         Inner(self.0.clone())
     }
 }
 
-unsafe impl<T, U: Async, F> Send for Inner<T, U, F> { }
-unsafe impl<T, U: Async, F> Sync for Inner<T, U, F> { }
+unsafe impl<'a, T: Send, U: Async<'a>, F> Send for Inner<'a, T, U, F> { }
+unsafe impl<'a, T: Send, U: Async<'a>, F> Sync for Inner<'a, T, U, F> { }
 
 const LOCK: usize = 1 << 31;
 
